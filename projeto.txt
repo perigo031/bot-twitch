@@ -1,0 +1,7 @@
+/
+├── api/
+│   └── view-bot.js      <-- O "Motor" que injeta as views
+├── src/
+│   └── App.jsx          <-- O Painel de Controle (Código anterior)
+├── package.json
+└── tailwind.config.js
