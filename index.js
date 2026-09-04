@@ -1,31 +1,25 @@
-// Aumenta o limite de listeners para evitar avisos no terminal
 require('events').EventEmitter.defaultMaxListeners = 50;
 
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 
-// Ativa o modo invisível para enganar a Twitch e a Kick
 puppeteer.use(StealthPlugin());
 
-/**
- * CONFIGURAÇÕES DE ACESSO E ALVO
- * Aqui você define quem vai receber as views e por quanto tempo
- */
 const SETTINGS = {
-    targetUrl: "https://www.kick.com/seu-canal", // COLOQUE O LINK DA LIVE AQUI
-    viewCount: 20000,                         // Meta de 20 mil views
-    durationMinutes: 120,                        // Tempo de permanência (ex: 120 min)
-    
-    // GATEWAY DE PROXY ROTATIVO (Comentado para rodar direto sem erros por enquanto)
-    // proxyGateway: "http://rotator.proxy-provider.com:8080", 
-    // proxyAuth: "usuario:senha",
+    targetUrl: "https://www.kick.com/seu-canal", 
+    viewCount: 20000,                         
+    durationMinutes: 120,                        
+    // Para rodar na Vercel/Cloud, você PRECISA de um Browserless Token ou URL de WebSocket
+    // Exemplo: "wss://chrome.browserless.io?token=SEU_TOKEN"
+    browserWssEndpoint: process.env.BROWSERLESS_WSS || null, 
+    proxyGateway: null, 
+    proxyAuth: null,
 };
 
 async function launchViewInstance(id) {
     let browser;
     try {
-        // Cada instância usa um User-Agent diferente para simular pessoas diferentes
         const userAgents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -40,30 +34,34 @@ async function launchViewInstance(id) {
             '--disable-web-security',
             '--disable-dev-shm-usage',
             '--disable-gpu',
-            '--disable-software-rasterizer',
             `--user-agent=${randomUA}`
         ];
 
-        // Se o proxy estiver ativo nas configurações, adiciona na inicialização
         if (SETTINGS.proxyGateway) {
             launchArgs.push(`--proxy-server=${SETTINGS.proxyGateway}`);
         }
 
-        browser = await puppeteer.launch({
-            headless: 'new', 
-            timeout: 60000,
-            args: launchArgs
-        });
+        // CORREÇÃO CRÍTICA: Se estiver na Vercel, conecta via WebSocket. Se for local, usa launch.
+        if (SETTINGS.browserWssEndpoint) {
+            browser = await puppeteer.connect({
+                browserWssEndpoint: SETTINGS.browserWssEndpoint,
+                defaultViewport: { width: 1280, height: 720 }
+            });
+        } else {
+            browser = await puppeteer.launch({
+                headless: 'new', 
+                args: launchArgs,
+                timeout: 60000
+            });
+        }
 
         const page = await browser.newPage();
         
-        // Mascara a resolução da tela para parecer um dispositivo real
         await page.setViewport({
             width: [1024, 1366, 1920][Math.floor(Math.random() * 3)],
             height: [768, 800, 1080][Math.floor(Math.random() * 3)],
         });
 
-        // Autenticação do Proxy (se houver)
         if (SETTINGS.proxyAuth && SETTINGS.proxyGateway) {
             await page.authenticate({
                 username: SETTINGS.proxyAuth.split(':')[0],
@@ -71,64 +69,53 @@ async function launchViewInstance(id) {
             });
         }
 
-        // Acessa a live com timeout longo para evitar quedas
         await page.goto(SETTINGS.targetUrl, { 
             waitUntil: 'networkidle2', 
             timeout: 90000 
         });
 
-        // Força o Play do vídeo e tira o mudo (essencial para a view contar)
+        // Execução de script para garantir que o vídeo rode
         await page.evaluate(async () => {
-            const video = document.querySelector('video');
-            if (video) {
-                video.muted = true;
-                await video.play();
-            }
+            const playVideo = async () => {
+                const video = document.querySelector('video');
+                if (video) {
+                    video.muted = true;
+                    try { await video.play(); } catch(e) {}
+                }
+            };
+            playVideo();
+            setInterval(playVideo, 10000); // Tenta dar play a cada 10s se cair
         });
 
-        console.log(`[SISTEMA] View #${id} conectada com sucesso.`);
+        console.log(`[SISTEMA] View #${id} conectada.`);
 
-        // Mantém a conexão aberta pelo tempo definido
+        // Em serverless, isso vai dar timeout. Em VPS, funciona.
         await new Promise(resolve => setTimeout(resolve, SETTINGS.durationMinutes * 60 * 1000));
 
     } catch (error) {
-        console.error(`[ERRO] Instância #${id} caiu: ${error.message}`);
+        console.error(`[ERRO] Instância #${id}: ${error.message}`);
     } finally {
         if (browser) await browser.close();
     }
 }
 
 async function main() {
-    console.log(`
-    ==================================================
-    🚀 VIEW-MASTER PRO: INJEÇÃO DE 20.000 VIEWS
-    🎯 ALVO: ${SETTINGS.targetUrl}
-    ⏱️ TEMPO: ${SETTINGS.durationMinutes} Minutos
-    🛡️ STATUS: ANTI-BAN ATIVADO (STEALTH MODE)
-    ==================================================
-    `);
+    console.log(`🚀 INICIANDO INJEÇÃO: ${SETTINGS.targetUrl}`);
 
-    // Reduzido para 5 para não travar a memória do Codespaces
-    const batchSize = 5; 
+    // Batch reduzido para evitar crash de memória
+    const batchSize = 3; 
     let totalLaunched = 0;
 
     while (totalLaunched < SETTINGS.viewCount) {
         const currentBatch = [];
-        
         for (let i = 0; i < batchSize && totalLaunched < SETTINGS.viewCount; i++) {
             totalLaunched++;
             currentBatch.push(launchViewInstance(totalLaunched));
         }
-
-        // Espera as instâncias do lote iniciarem antes de mandar as próximas
         await Promise.all(currentBatch);
-        console.log(`📈 PROGRESSO: ${totalLaunched} / ${SETTINGS.viewCount} views injetadas.`);
-        
-        // Intervalo de 3 segundos entre lotes
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        console.log(`📈 PROGRESSO: ${totalLaunched} / ${SETTINGS.viewCount}`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
     }
-
-    console.log(`✅ Meta atingida! As views estão rodando no alvo.`);
 }
 
 main().catch(console.error);
